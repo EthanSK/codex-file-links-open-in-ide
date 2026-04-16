@@ -1,0 +1,22 @@
+{
+  "name": "codex-file-links-open-in-ide",
+  "version": "0.1.0",
+  "description": "Codex skill and macOS patch script to open markdown file-reference clicks in your configured IDE.",
+  "license": "MIT",
+  "type": "commonjs",
+  "bin": {
+    "patch-codex-file-links": "scripts/patch-codex-file-links.js"
+  },
+  "scripts": {
+    "check": "node --check scripts/patch-codex-file-links.js",
+    "dry-run": "node scripts/patch-codex-file-links.js --dry-run",
+    "patch": "node scripts/patch-codex-file-links.js --resign"
+  },
+  "keywords": [
+    "codex",
+    "codex-skill",
+    "macos",
+    "ide",
+    "vscode"
+  ]
+}

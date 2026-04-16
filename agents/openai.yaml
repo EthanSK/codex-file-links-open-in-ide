@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex File Links"
+  short_description: "Open Codex file links in IDE."
+  default_prompt: "Patch the installed Codex app so file-reference links open in the configured IDE, then verify the patch."
