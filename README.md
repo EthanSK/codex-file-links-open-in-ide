@@ -1,10 +1,29 @@
+# ⚠️ WARNING: FAILING PROJECT ⚠️
+
+This project is a documented failed attempt to patch Codex desktop file-link behavior.
+
+The goal was simple: make normal markdown file-reference clicks in Codex open in the configured IDE again, instead of opening inside Codex. The context-menu path already opens the IDE, so this should have been a setting. It is not exposed as one, and patching the app bundle runs into Electron ASAR validation, macOS signing, and macOS permission problems.
+
+The frustrating result: users are stuck with the slower right-click/context-menu workflow until Codex exposes a supported setting or fixes normal file-link clicks upstream. That is annoying, unnecessary, and a pretty miserable place to land for something this basic.
+
+## Findings
+
+- Codex desktop routes normal markdown file-link clicks through an internal side-panel branch when a feature gate is enabled.
+- The existing IDE-opening path still exists, which is why right-click/context-menu actions can open the IDE.
+- A narrow byte patch can disable the side-panel branch, but modifying `app.asar` is not safe on current Codex desktop builds.
+- Electron validates ASAR file blocks at runtime. Even after recomputing the visible file integrity hash and updating `Info.plist`, Codex still crashed with `Failed to validate block while ending ASAR file stream`.
+- Editing the app bundle invalidates OpenAI's signature. Ad-hoc signing can make `codesign` pass, but it causes macOS trust, keychain, TCC, and permission prompt weirdness because the app is no longer signed by OpenAI.
+- Re-signing without Electron entitlements also causes dyld to reject `Electron Framework.framework` with a `Library Validation failed` error.
+- The safest recovery is to restore the original `app.asar` and `Info.plist`, re-sign only if necessary to repair the local bundle, and leave the click behavior unmodified.
+- The published script now refuses to apply the patch and is safe for inspection only.
+
 # Codex File Links Open In IDE
 
 Make normal file-reference clicks in the macOS Codex desktop app open in your configured IDE again.
 
 > **Current status:** patch application is disabled for current Codex builds because the patched ASAR can still crash Electron's runtime ASAR validator. See [issue #1](https://github.com/EthanSK/codex-file-links-open-in-ide/issues/1). The script is currently safe for inspection only.
 
-Recent Codex desktop builds can route markdown file links like `src/app.ts:42` into the Codex side panel instead of your IDE. The context-menu action still opens the IDE, but normal click behavior is the annoying part. This skill patches that narrow click path so a normal click goes through Codex's existing `open-file` flow again.
+Recent Codex desktop builds can route markdown file links like `src/app.ts:42` into the Codex side panel instead of your IDE. The context-menu action still opens the IDE, but normal click behavior is the annoying part. This repository documents the attempted patch and why it is currently disabled.
 
 ## What This Is
 
@@ -24,10 +43,15 @@ Before:
 - Codex opens the file in its side panel.
 - You have to right-click or use a context menu to open it in your IDE.
 
-After:
+Intended after:
 
 - Click the same file reference.
 - Codex uses its configured IDE target, such as VS Code, Cursor, or another supported target.
+
+Actual status:
+
+- The patch is disabled because the patched Codex app crashes.
+- Use the context menu until Codex exposes a supported setting or fixes the click path.
 
 ## Compatibility
 
@@ -61,7 +85,7 @@ Then ask Codex:
 Use $codex-file-links-open-in-ide to patch Codex file links so they open in my IDE.
 ```
 
-When Codex updates and the behavior comes back, ask Codex the same thing again.
+The skill currently inspects the app and refuses to patch. Do not use it as an automatic reapply tool until [issue #1](https://github.com/EthanSK/codex-file-links-open-in-ide/issues/1) is resolved.
 
 ## Run Directly
 
@@ -83,7 +107,7 @@ If Codex is installed somewhere else:
 node ~/.codex/skills/codex-file-links-open-in-ide/scripts/patch-codex-file-links.js --app "/path/to/Codex.app" --resign
 ```
 
-Restart Codex after patching. Already-open windows keep the old renderer JavaScript until the app restarts.
+Do not patch current Codex builds. The command is blocked because it can leave Codex crashing.
 
 ## How It Works
 
@@ -105,9 +129,9 @@ Because the replacement is the same byte length, the packed file layout stays un
 
 That was not sufficient on Codex `26.409.20454`: Electron still crashed with `Failed to validate block while ending ASAR file stream`. Until that is understood, the script refuses to apply the patch.
 
-## What The Script Does
+## What The Script Tried
 
-The working patch has to do more than change one byte sequence. The full sequence is:
+The attempted patch had to do more than change one byte sequence. The full sequence was:
 
 1. Inspect `/Applications/Codex.app/Contents/Resources/app.asar`.
 2. Verify the ASAR header hash matches `Info.plist`.
@@ -136,9 +160,9 @@ The script is deliberately conservative:
 - It recognizes an already patched app and does not patch twice.
 - It currently refuses to write the patch because current Codex builds can crash after patching.
 - It verifies that the ASAR header hash still matches `Info.plist`.
-- It updates the target file's ASAR integrity metadata so Electron's ASAR validator accepts the patched bundle.
-- It can ad-hoc sign Codex.app with the Electron entitlements needed for launch.
-- It clears stale app-bundle provenance metadata after ad-hoc signing so macOS does not enforce the old Gatekeeper assessment.
+- It contains code for updating the target file's ASAR integrity metadata, but patch writes are disabled because that still did not satisfy Electron's runtime validator.
+- It contains code for ad-hoc signing Codex.app with the Electron entitlements needed for launch, but that is not a substitute for OpenAI's official signature.
+- It contains code for clearing stale app-bundle provenance metadata after ad-hoc signing, but patch writes are disabled.
 
 Re-signing is local ad-hoc signing. That means `codesign --verify` can pass, but the app is no longer carrying OpenAI's original notarized signature until you reinstall or update Codex. This is normal for a locally patched macOS app bundle.
 
@@ -176,7 +200,7 @@ Gatekeeper provenance:
 
 ## Validation Checklist
 
-After patching, these checks should pass:
+In the safe, unpatched state, these checks should pass:
 
 ```bash
 node ~/.codex/skills/codex-file-links-open-in-ide/scripts/patch-codex-file-links.js --dry-run
@@ -187,9 +211,9 @@ open -a /Applications/Codex.app
 The dry-run should report:
 
 ```text
-Old token matches: 0
-Patched token matches: 1
-Status: already patched
+Old token matches: 1
+Patched token matches: 0
+Status: patchable, but patch application is disabled because it currently crashes Codex
 ```
 
 It should also show the same ASAR header hash for:
@@ -199,7 +223,7 @@ ASAR header hash
 Info.plist ASAR header hash
 ```
 
-If Codex was already open while patching, fully quit and reopen it before testing links. Existing windows can keep renderer JavaScript that was loaded before the patch.
+If Codex is patched and crashing, restore the original `app.asar` and `Info.plist` from backup or reinstall/update Codex to get back to the official app bundle.
 
 ## Troubleshooting
 
@@ -217,15 +241,15 @@ node scripts/patch-codex-file-links.js --app "/path/to/Codex.app" --dry-run
 
 macOS refuses to launch Codex
 
-Run the patch with `--resign`, then restart Codex. This re-signs with the Electron launch entitlements and clears app-bundle provenance metadata. If Gatekeeper still blocks it, the cleanest restore is to reinstall or update Codex.
+Do not run the patch on current Codex builds. The cleanest restore is to reinstall or update Codex. If using this repo's local backups, restore the original `app.asar` and `Info.plist`, then re-sign only if needed to repair the local bundle.
 
 `Failed to validate block while ending ASAR file stream`
 
-The app has a patched ASAR payload but stale ASAR integrity metadata. Update to the latest version of this skill and run the patch again with `--resign`.
+The app has a patched ASAR payload that Electron rejects at runtime. Restore the original ASAR or reinstall/update Codex.
 
 `Library Validation failed` or `Electron Framework.framework not valid for use in process`
 
-The app was ad-hoc signed without the Electron launch entitlements. Update to the latest version of this skill and run the patch again with `--resign`.
+The app was ad-hoc signed without the Electron launch entitlements, or the local signature is otherwise not equivalent to OpenAI's. Reinstall/update Codex to return to the official signature.
 
 Links open in the wrong editor
 
