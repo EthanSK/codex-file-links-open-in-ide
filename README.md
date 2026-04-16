@@ -2,6 +2,8 @@
 
 Make normal file-reference clicks in the macOS Codex desktop app open in your configured IDE again.
 
+> **Current status:** patch application is disabled for current Codex builds because the patched ASAR can still crash Electron's runtime ASAR validator. See [issue #1](https://github.com/EthanSK/codex-file-links-open-in-ide/issues/1). The script is currently safe for inspection only.
+
 Recent Codex desktop builds can route markdown file links like `src/app.ts:42` into the Codex side panel instead of your IDE. The context-menu action still opens the IDE, but normal click behavior is the annoying part. This skill patches that narrow click path so a normal click goes through Codex's existing `open-file` flow again.
 
 ## What This Is
@@ -69,7 +71,7 @@ Inspect the installed app without changing anything:
 node ~/.codex/skills/codex-file-links-open-in-ide/scripts/patch-codex-file-links.js --dry-run
 ```
 
-Apply the patch and ad-hoc re-sign the app:
+Patch application is currently disabled because it can crash Codex. The old command is intentionally blocked:
 
 ```bash
 node ~/.codex/skills/codex-file-links-open-in-ide/scripts/patch-codex-file-links.js --resign
@@ -99,7 +101,9 @@ to:
 if(0&&m){PX(f,l==null?o:jt(l,o));return}
 ```
 
-Because the replacement is the same byte length, the packed file layout stays unchanged. Modern Electron still validates the changed JavaScript file against ASAR integrity metadata, so the script also recomputes that file's SHA-256 integrity entry inside the ASAR header and writes the new ASAR header hash to `Info.plist`.
+Because the replacement is the same byte length, the packed file layout stays unchanged. Modern Electron still validates the changed JavaScript file against ASAR integrity metadata, so the script also tried recomputing that file's SHA-256 integrity entry inside the ASAR header and writing the new ASAR header hash to `Info.plist`.
+
+That was not sufficient on Codex `26.409.20454`: Electron still crashed with `Failed to validate block while ending ASAR file stream`. Until that is understood, the script refuses to apply the patch.
 
 ## What The Script Does
 
@@ -110,7 +114,7 @@ The working patch has to do more than change one byte sequence. The full sequenc
 3. Count the unpatched and patched click-handler tokens.
 4. Stop unless the app is already patched or exactly one known unpatched token exists.
 5. Back up `app.asar` and `Info.plist` under `~/.codex/backups/codex-file-links-open-in-ide/`.
-6. Patch the side-panel branch in the renderer JavaScript.
+6. Patch the side-panel branch in the renderer JavaScript. Currently disabled.
 7. Locate the patched file entry inside the ASAR header.
 8. Recompute that file's ASAR integrity hash and block hash.
 9. Rewrite the ASAR header with the updated file integrity.
@@ -118,6 +122,8 @@ The working patch has to do more than change one byte sequence. The full sequenc
 11. Ad-hoc sign nested Electron code and the app bundle with the required launch entitlements.
 12. Clear stale app-bundle provenance metadata.
 13. Verify the final app bundle with `codesign`.
+
+This sequence is documented because it is what was tried. The script now stops before the write step until [issue #1](https://github.com/EthanSK/codex-file-links-open-in-ide/issues/1) is resolved.
 
 The script only modifies the Codex app bundle and its own backup directory. It does not touch Codex chats, workspaces, browser state, project files, or `~/Library/Application Support/Codex`.
 
@@ -128,6 +134,7 @@ The script is deliberately conservative:
 - It backs up `app.asar` and `Info.plist` to `~/.codex/backups/codex-file-links-open-in-ide/`.
 - It requires exactly one known unpatched token before writing.
 - It recognizes an already patched app and does not patch twice.
+- It currently refuses to write the patch because current Codex builds can crash after patching.
 - It verifies that the ASAR header hash still matches `Info.plist`.
 - It updates the target file's ASAR integrity metadata so Electron's ASAR validator accepts the patched bundle.
 - It can ad-hoc sign Codex.app with the Electron entitlements needed for launch.

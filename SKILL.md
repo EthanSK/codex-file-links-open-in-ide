@@ -18,13 +18,9 @@ Use this skill when the macOS Codex desktop app opens markdown file-reference cl
 node <skill-dir>/scripts/patch-codex-file-links.js --dry-run
 ```
 
-3. If the script reports `patchable` or `already patched`, apply or re-sign the patch:
+3. Do not apply the patch on current Codex builds. The patch is disabled while the ASAR crash is tracked in <https://github.com/EthanSK/codex-file-links-open-in-ide/issues/1>.
 
-```bash
-node <skill-dir>/scripts/patch-codex-file-links.js --resign
-```
-
-4. Verify the patch and launch state:
+4. Verify the current app state:
 
 ```bash
 node <skill-dir>/scripts/patch-codex-file-links.js --dry-run
@@ -32,7 +28,7 @@ codesign --verify --deep --strict --verbose=2 /Applications/Codex.app
 open -a /Applications/Codex.app
 ```
 
-5. Tell the user to restart Codex. Already-running renderer windows keep old JavaScript until restart.
+5. If the app is patched and crashing, restore the original `app.asar` and `Info.plist` from the latest backup, re-sign the unpatched app, and leave the click behavior unmodified.
 
 ## What It Patches
 
@@ -54,6 +50,8 @@ This disables only the side-panel click branch. Context-menu actions and the nor
 
 The script also updates the patched JavaScript file's ASAR integrity hash and then updates `Info.plist` with the new ASAR header hash. Without that, Electron can kill Codex at launch with an ASAR validation failure.
 
+Known status: even after updating the visible ASAR integrity metadata, current Codex builds can still crash with Electron's ASAR validator. Do not apply the patch until <https://github.com/EthanSK/codex-file-links-open-in-ide/issues/1> is resolved.
+
 ## Safety Rules
 
 - Only use the bundled script; do not hand-edit `app.asar`.
@@ -61,6 +59,6 @@ The script also updates the patched JavaScript file's ASAR integrity hash and th
 - The script creates timestamped backups under `~/.codex/backups/codex-file-links-open-in-ide/`.
 - Pass `--app <path>` if Codex is installed somewhere other than `/Applications/Codex.app`.
 - Codex updates replace the app bundle, so this patch may need to be reapplied after updates.
-- Actual patching requires `--resign`; dry-run mode is the only no-write mode.
+- Actual patching is disabled; dry-run mode is the only supported mode until the ASAR validation issue is resolved.
 - Re-signing is ad-hoc signing with the Electron entitlements needed for launch, including disabled library validation. It verifies locally with `codesign`, but it is no longer the original OpenAI notarized signature until Codex is updated or reinstalled.
 - The script clears app-bundle provenance metadata after ad-hoc signing because macOS can otherwise enforce a stale Gatekeeper assessment. This touches only `/Applications/Codex.app`, not Codex user data or chat state.

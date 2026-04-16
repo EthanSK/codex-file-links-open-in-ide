@@ -17,6 +17,8 @@ const DEFAULT_BACKUP_ROOT = path.join(
 
 const OLD_TOKEN = "if(d&&m){PX(f,l==null?o:jt(l,o));return}";
 const NEW_TOKEN = "if(0&&m){PX(f,l==null?o:jt(l,o));return}";
+const UNSAFE_PATCH_ISSUE_URL =
+  "https://github.com/EthanSK/codex-file-links-open-in-ide/issues/1";
 const AD_HOC_ENTITLEMENTS = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -38,7 +40,7 @@ Options:
   --app <path>          Codex.app path. Defaults to /Applications/Codex.app.
   --backup-root <path>  Backup folder. Defaults to ~/.codex/backups/codex-file-links-open-in-ide.
   --dry-run             Inspect only; do not write files or sign the app.
-  --resign              Required for patching; ad-hoc sign with Electron entitlements.
+  --resign              Disabled while the ASAR patch crash is unresolved.
   --help                Show this help.
 `);
 }
@@ -474,8 +476,9 @@ function main() {
 
   if (inspection.oldCount === 0 && inspection.newCount > 0) {
     console.log("Status: already patched");
-    if (!args.dryRun && args.resign) {
-      signAndVerify(appPath);
+    console.log(`Warning: this patch is known to crash current Codex builds. See ${UNSAFE_PATCH_ISSUE_URL}`);
+    if (!args.dryRun) {
+      throw new Error("Refusing to re-sign an already patched app while the crash issue is unresolved");
     }
     return;
   }
@@ -487,15 +490,14 @@ function main() {
   }
 
   if (args.dryRun) {
-    console.log("Status: patchable (dry run, no files changed)");
+    console.log("Status: patchable, but patch application is disabled because it currently crashes Codex");
+    console.log(`Issue: ${UNSAFE_PATCH_ISSUE_URL}`);
     return;
   }
 
-  if (!args.resign) {
-    throw new Error(
-      "Patching this Codex build requires --resign because ASAR integrity and Electron launch entitlements must both be updated.",
-    );
-  }
+  throw new Error(
+    `Patch application is disabled because the patched ASAR still crashes Codex. See ${UNSAFE_PATCH_ISSUE_URL}`,
+  );
 
   const backupDir = makeBackup({ appPath, asarPath, backupRoot, infoPlistPath });
   const patched = Buffer.from(before);
