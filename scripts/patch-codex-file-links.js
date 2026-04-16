@@ -17,6 +17,19 @@ const DEFAULT_BACKUP_ROOT = path.join(
 
 const OLD_TOKEN = "if(d&&m){PX(f,l==null?o:jt(l,o));return}";
 const NEW_TOKEN = "if(0&&m){PX(f,l==null?o:jt(l,o));return}";
+const AD_HOC_ENTITLEMENTS = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+</dict>
+</plist>
+`;
 
 function usage() {
   console.log(`Usage: patch-codex-file-links.js [options]
@@ -25,7 +38,7 @@ Options:
   --app <path>          Codex.app path. Defaults to /Applications/Codex.app.
   --backup-root <path>  Backup folder. Defaults to ~/.codex/backups/codex-file-links-open-in-ide.
   --dry-run             Inspect only; do not write files or sign the app.
-  --resign              Ad-hoc sign Codex.app after patching or when already patched.
+  --resign              Required for patching; ad-hoc sign with Electron entitlements.
   --help                Show this help.
 `);
 }
@@ -98,6 +111,10 @@ function run(command, args, options = {}) {
   });
 }
 
+function runIgnoringFailure(command, args) {
+  run(command, args);
+}
+
 function readPlistValue(plistPath, keyPath) {
   const result = run("/usr/libexec/PlistBuddy", ["-c", `Print ${keyPath}`, plistPath]);
   if (result.status !== 0) {
@@ -106,11 +123,18 @@ function readPlistValue(plistPath, keyPath) {
   return result.stdout.trim();
 }
 
+function setPlistValue(plistPath, keyPath, value) {
+  const result = run("/usr/libexec/PlistBuddy", ["-c", `Set ${keyPath} ${value}`, plistPath]);
+  if (result.status !== 0) {
+    throw new Error(`Failed to update ${keyPath} in Info.plist: ${result.stderr}`);
+  }
+}
+
 function sha256(buffer) {
   return crypto.createHash("sha256").update(buffer).digest("hex");
 }
 
-function getAsarHeaderHash(buffer) {
+function getAsarHeaderInfo(buffer) {
   if (buffer.length < 16) {
     throw new Error("ASAR is too small to contain a header");
   }
@@ -122,7 +146,19 @@ function getAsarHeaderHash(buffer) {
     throw new Error(`Invalid ASAR header JSON size: ${jsonSize}`);
   }
 
-  return sha256(buffer.subarray(start, end));
+  const text = buffer.subarray(start, end).toString("utf8");
+  return {
+    end,
+    header: JSON.parse(text),
+    jsonSize,
+    start,
+    text,
+  };
+}
+
+function getAsarHeaderHash(buffer) {
+  const headerInfo = getAsarHeaderInfo(buffer);
+  return sha256(buffer.subarray(headerInfo.start, headerInfo.end));
 }
 
 function countToken(buffer, token) {
@@ -149,11 +185,103 @@ function replaceToken(buffer, oldToken, newToken) {
   const newBuffer = Buffer.from(newToken);
   const foundAt = buffer.indexOf(oldBuffer);
   if (foundAt === -1) {
-    return false;
+    return null;
   }
 
   newBuffer.copy(buffer, foundAt);
-  return true;
+  return foundAt;
+}
+
+function findAsarFileForOffset(headerInfo, absoluteOffset) {
+  const contentBase = headerInfo.end;
+
+  function walk(node, parts) {
+    if (!node.files) {
+      return null;
+    }
+
+    for (const [name, entry] of Object.entries(node.files)) {
+      const nextParts = [...parts, name];
+      if (entry.files) {
+        const nested = walk(entry, nextParts);
+        if (nested) {
+          return nested;
+        }
+        continue;
+      }
+
+      if (entry.offset == null || entry.size == null) {
+        continue;
+      }
+
+      const contentStart = contentBase + Number(entry.offset);
+      const contentEnd = contentStart + entry.size;
+      if (absoluteOffset >= contentStart && absoluteOffset < contentEnd) {
+        return {
+          contentEnd,
+          contentStart,
+          entry,
+          path: nextParts.join("/"),
+        };
+      }
+    }
+
+    return null;
+  }
+
+  return walk(headerInfo.header, []);
+}
+
+function computeFileIntegrity(buffer, target) {
+  const existing = target.entry.integrity;
+  if (!existing) {
+    return null;
+  }
+  if (existing.algorithm !== "SHA256") {
+    throw new Error(`Unsupported ASAR file integrity algorithm: ${existing.algorithm}`);
+  }
+
+  const file = buffer.subarray(target.contentStart, target.contentEnd);
+  const blockSize = existing.blockSize ?? file.length;
+  const blocks = [];
+  for (let offset = 0; offset < file.length; offset += blockSize) {
+    blocks.push(sha256(file.subarray(offset, Math.min(offset + blockSize, file.length))));
+  }
+
+  return {
+    algorithm: "SHA256",
+    blockSize,
+    blocks,
+    hash: sha256(file),
+  };
+}
+
+function updateAsarFileIntegrity(buffer, patchOffset) {
+  const headerInfo = getAsarHeaderInfo(buffer);
+  const target = findAsarFileForOffset(headerInfo, patchOffset);
+  if (!target) {
+    throw new Error("Could not map patch offset back to an ASAR file entry");
+  }
+
+  const integrity = computeFileIntegrity(buffer, target);
+  if (!integrity) {
+    return { headerHash: getAsarHeaderHash(buffer), targetPath: target.path, updated: false };
+  }
+
+  target.entry.integrity = integrity;
+  const nextHeaderText = JSON.stringify(headerInfo.header);
+  if (Buffer.byteLength(nextHeaderText) !== headerInfo.jsonSize) {
+    throw new Error(
+      `ASAR header size changed while updating integrity for ${target.path}; aborting`,
+    );
+  }
+
+  Buffer.from(nextHeaderText, "utf8").copy(buffer, headerInfo.start);
+  return {
+    headerHash: sha256(buffer.subarray(headerInfo.start, headerInfo.end)),
+    targetPath: target.path,
+    updated: true,
+  };
 }
 
 function getVersion(infoPlistPath) {
@@ -228,23 +356,51 @@ function collectNestedCodePaths(appPath) {
   return matches.sort((left, right) => right.length - left.length);
 }
 
-function signPath(codePath) {
+function writeEntitlementsFile() {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-file-links-"));
+  const entitlementsPath = path.join(tempDir, "entitlements.plist");
+  fs.writeFileSync(entitlementsPath, AD_HOC_ENTITLEMENTS, "utf8");
+  return { entitlementsPath, tempDir };
+}
+
+function shouldUseEntitlements(codePath, appPath) {
+  return codePath === appPath || codePath.endsWith(".app") || codePath.endsWith(".xpc");
+}
+
+function signPath(codePath, { appPath, entitlementsPath }) {
+  const args = ["--force", "--deep", "--sign", "-", "--timestamp=none", "--options", "runtime"];
+  if (shouldUseEntitlements(codePath, appPath)) {
+    // Electron needs these after ad-hoc signing or macOS rejects Electron Framework at launch.
+    args.push("--entitlements", entitlementsPath);
+  }
+  args.push(codePath);
   return run(
     "codesign",
-    ["--force", "--deep", "--sign", "-", "--timestamp=none", "--options", "runtime", codePath],
+    args,
     { stdio: "inherit" },
   );
 }
 
 function signApp(appPath) {
-  for (const nestedPath of collectNestedCodePaths(appPath)) {
-    const result = signPath(nestedPath);
-    if (result.status !== 0) {
-      return result;
+  const { entitlementsPath, tempDir } = writeEntitlementsFile();
+  try {
+    for (const nestedPath of collectNestedCodePaths(appPath)) {
+      const result = signPath(nestedPath, { appPath, entitlementsPath });
+      if (result.status !== 0) {
+        return result;
+      }
     }
-  }
 
-  return signPath(appPath);
+    return signPath(appPath, { appPath, entitlementsPath });
+  } finally {
+    fs.rmSync(tempDir, { force: true, recursive: true });
+  }
+}
+
+function clearProvenanceMetadata(appPath) {
+  runIgnoringFailure("xattr", ["-dr", "com.apple.provenance", appPath]);
+  runIgnoringFailure("xattr", ["-rsd", "com.apple.provenance", appPath]);
+  runIgnoringFailure("xattr", ["-d", "com.apple.macl", appPath]);
 }
 
 function ensureMacOS() {
@@ -293,11 +449,13 @@ function signAndVerify(appPath) {
   if (signResult.status !== 0) {
     throw new Error(`codesign failed with status ${signResult.status}`);
   }
+  clearProvenanceMetadata(appPath);
   const verifyAfterSign = verifyCodeSignature(appPath);
   if (verifyAfterSign.status !== 0) {
     throw new Error(`codesign verification failed after resigning: ${verifyAfterSign.stderr}`);
   }
-  console.log("Code signature: ad-hoc signed and verified");
+  console.log("Code signature: ad-hoc signed with Electron entitlements and verified");
+  console.log("Provenance metadata: cleared from Codex.app");
 }
 
 function main() {
@@ -333,34 +491,43 @@ function main() {
     return;
   }
 
+  if (!args.resign) {
+    throw new Error(
+      "Patching this Codex build requires --resign because ASAR integrity and Electron launch entitlements must both be updated.",
+    );
+  }
+
   const backupDir = makeBackup({ appPath, asarPath, backupRoot, infoPlistPath });
   const patched = Buffer.from(before);
-  if (!replaceToken(patched, OLD_TOKEN, NEW_TOKEN)) {
+  const patchOffset = replaceToken(patched, OLD_TOKEN, NEW_TOKEN);
+  if (patchOffset == null) {
     throw new Error("Patch token disappeared before write");
   }
 
-  const patchedHeaderHash = getAsarHeaderHash(patched);
-  if (inspection.expectedHeaderHash && patchedHeaderHash !== inspection.expectedHeaderHash) {
-    throw new Error("Patch would change the ASAR header hash; aborting");
+  const integrityUpdate = updateAsarFileIntegrity(patched, patchOffset);
+
+  try {
+    fs.writeFileSync(asarPath, patched);
+    if (inspection.expectedHeaderHash) {
+      setPlistValue(
+        infoPlistPath,
+        ":ElectronAsarIntegrity:Resources/app.asar:hash",
+        integrityUpdate.headerHash,
+      );
+    }
+  } catch (error) {
+    copyFile(path.join(backupDir, "app.asar"), asarPath);
+    copyFile(path.join(backupDir, "Info.plist"), infoPlistPath);
+    throw error;
   }
 
-  fs.writeFileSync(asarPath, patched);
+  console.log(`ASAR target: ${integrityUpdate.targetPath}`);
+  console.log(`ASAR file integrity: ${integrityUpdate.updated ? "updated" : "not present"}`);
+  console.log(`Info.plist ASAR header hash: ${integrityUpdate.headerHash}`);
   console.log(`Backup: ${backupDir}`);
   console.log("Status: patched");
 
-  if (args.resign) {
-    signAndVerify(appPath);
-    console.log("Next step: restart Codex");
-    return;
-  }
-
-  const verifyAfterPatch = verifyCodeSignature(appPath);
-  if (verifyAfterPatch.status !== 0) {
-    console.log("Code signature: invalid after patch, expected for unsigned ASAR edits");
-    console.log("If macOS refuses to launch Codex, rerun this script with --resign.");
-  } else {
-    console.log("Code signature: still valid");
-  }
+  signAndVerify(appPath);
   console.log("Next step: restart Codex");
 }
 

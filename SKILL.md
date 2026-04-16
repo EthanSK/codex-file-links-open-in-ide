@@ -24,11 +24,12 @@ node <skill-dir>/scripts/patch-codex-file-links.js --dry-run
 node <skill-dir>/scripts/patch-codex-file-links.js --resign
 ```
 
-4. Verify the patch:
+4. Verify the patch and launch state:
 
 ```bash
 node <skill-dir>/scripts/patch-codex-file-links.js --dry-run
 codesign --verify --deep --strict --verbose=2 /Applications/Codex.app
+open -a /Applications/Codex.app
 ```
 
 5. Tell the user to restart Codex. Already-running renderer windows keep old JavaScript until restart.
@@ -51,6 +52,8 @@ if(0&&m){PX(...)
 
 This disables only the side-panel click branch. Context-menu actions and the normal IDE-opening IPC path remain intact.
 
+The script also updates the patched JavaScript file's ASAR integrity hash and then updates `Info.plist` with the new ASAR header hash. Without that, Electron can kill Codex at launch with an ASAR validation failure.
+
 ## Safety Rules
 
 - Only use the bundled script; do not hand-edit `app.asar`.
@@ -58,4 +61,6 @@ This disables only the side-panel click branch. Context-menu actions and the nor
 - The script creates timestamped backups under `~/.codex/backups/codex-file-links-open-in-ide/`.
 - Pass `--app <path>` if Codex is installed somewhere other than `/Applications/Codex.app`.
 - Codex updates replace the app bundle, so this patch may need to be reapplied after updates.
-- Re-signing is ad-hoc signing. It verifies locally with `codesign`, but it is no longer the original OpenAI notarized signature until Codex is updated or reinstalled.
+- Actual patching requires `--resign`; dry-run mode is the only no-write mode.
+- Re-signing is ad-hoc signing with the Electron entitlements needed for launch, including disabled library validation. It verifies locally with `codesign`, but it is no longer the original OpenAI notarized signature until Codex is updated or reinstalled.
+- The script clears app-bundle provenance metadata after ad-hoc signing because macOS can otherwise enforce a stale Gatekeeper assessment. This touches only `/Applications/Codex.app`, not Codex user data or chat state.

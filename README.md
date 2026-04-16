@@ -99,7 +99,7 @@ to:
 if(0&&m){PX(f,l==null?o:jt(l,o));return}
 ```
 
-Because the replacement is the same byte length, the ASAR header hash stays unchanged. The script still verifies the ASAR integrity hash stored in `Info.plist` before and after patching.
+Because the replacement is the same byte length, the packed file layout stays unchanged. Modern Electron still validates the changed JavaScript file against ASAR integrity metadata, so the script also recomputes that file's SHA-256 integrity entry inside the ASAR header and writes the new ASAR header hash to `Info.plist`.
 
 ## Safety
 
@@ -109,9 +109,19 @@ The script is deliberately conservative:
 - It requires exactly one known unpatched token before writing.
 - It recognizes an already patched app and does not patch twice.
 - It verifies that the ASAR header hash still matches `Info.plist`.
-- It can ad-hoc sign Codex.app and verify the local signature with `codesign`.
+- It updates the target file's ASAR integrity metadata so Electron's ASAR validator accepts the patched bundle.
+- It can ad-hoc sign Codex.app with the Electron entitlements needed for launch.
+- It clears stale app-bundle provenance metadata after ad-hoc signing so macOS does not enforce the old Gatekeeper assessment.
 
 Re-signing is local ad-hoc signing. That means `codesign --verify` can pass, but the app is no longer carrying OpenAI's original notarized signature until you reinstall or update Codex. This is normal for a locally patched macOS app bundle.
+
+The script signs Electron app and XPC targets with:
+
+- `com.apple.security.cs.allow-jit`
+- `com.apple.security.cs.allow-unsigned-executable-memory`
+- `com.apple.security.cs.disable-library-validation`
+
+Without those entitlements, macOS can launch Codex and then immediately kill it with a dyld error like `Library Validation failed` when the main process loads `Electron Framework.framework`.
 
 ## Troubleshooting
 
@@ -129,7 +139,7 @@ node scripts/patch-codex-file-links.js --app "/path/to/Codex.app" --dry-run
 
 macOS refuses to launch Codex
 
-Run the patch with `--resign`, then restart Codex. If the app is quarantined or Gatekeeper blocks it, the cleanest restore is to reinstall or update Codex.
+Run the patch with `--resign`, then restart Codex. This re-signs with the Electron launch entitlements and clears app-bundle provenance metadata. If Gatekeeper still blocks it, the cleanest restore is to reinstall or update Codex.
 
 Links open in the wrong editor
 
