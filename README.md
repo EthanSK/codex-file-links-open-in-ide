@@ -101,6 +101,26 @@ if(0&&m){PX(f,l==null?o:jt(l,o));return}
 
 Because the replacement is the same byte length, the packed file layout stays unchanged. Modern Electron still validates the changed JavaScript file against ASAR integrity metadata, so the script also recomputes that file's SHA-256 integrity entry inside the ASAR header and writes the new ASAR header hash to `Info.plist`.
 
+## What The Script Does
+
+The working patch has to do more than change one byte sequence. The full sequence is:
+
+1. Inspect `/Applications/Codex.app/Contents/Resources/app.asar`.
+2. Verify the ASAR header hash matches `Info.plist`.
+3. Count the unpatched and patched click-handler tokens.
+4. Stop unless the app is already patched or exactly one known unpatched token exists.
+5. Back up `app.asar` and `Info.plist` under `~/.codex/backups/codex-file-links-open-in-ide/`.
+6. Patch the side-panel branch in the renderer JavaScript.
+7. Locate the patched file entry inside the ASAR header.
+8. Recompute that file's ASAR integrity hash and block hash.
+9. Rewrite the ASAR header with the updated file integrity.
+10. Write the new ASAR header hash back to `Info.plist`.
+11. Ad-hoc sign nested Electron code and the app bundle with the required launch entitlements.
+12. Clear stale app-bundle provenance metadata.
+13. Verify the final app bundle with `codesign`.
+
+The script only modifies the Codex app bundle and its own backup directory. It does not touch Codex chats, workspaces, browser state, project files, or `~/Library/Application Support/Codex`.
+
 ## Safety
 
 The script is deliberately conservative:
@@ -123,6 +143,57 @@ The script signs Electron app and XPC targets with:
 
 Without those entitlements, macOS can launch Codex and then immediately kill it with a dyld error like `Library Validation failed` when the main process loads `Electron Framework.framework`.
 
+## Why The Extra Steps Matter
+
+Two things made the first simple patch unsafe on current Codex desktop builds:
+
+ASAR file integrity:
+
+- The JavaScript token lives in `webview/assets/large-empty-state-DEvsPXBF.js` inside `app.asar`.
+- Electron validates file blocks inside the ASAR at runtime.
+- A byte-only patch can make Codex die with an error like `Failed to validate block while ending ASAR file stream`.
+- Updating the per-file ASAR integrity entry and the top-level `Info.plist` ASAR hash fixes that.
+
+macOS launch signing:
+
+- Editing the bundle invalidates the original OpenAI signature.
+- Re-signing without the right Electron entitlements can make dyld reject Electron's bundled framework.
+- The observed failure looked like `Library Validation failed` for `Electron Framework.framework`.
+- Signing with `allow-jit`, `allow-unsigned-executable-memory`, and `disable-library-validation` fixes that local launch path.
+
+Gatekeeper provenance:
+
+- macOS can keep app-bundle provenance metadata that points at a stale security assessment.
+- The script clears provenance metadata only from `/Applications/Codex.app` after signing.
+- User data and Codex state are not touched.
+
+## Validation Checklist
+
+After patching, these checks should pass:
+
+```bash
+node ~/.codex/skills/codex-file-links-open-in-ide/scripts/patch-codex-file-links.js --dry-run
+codesign --verify --deep --strict --verbose=2 /Applications/Codex.app
+open -a /Applications/Codex.app
+```
+
+The dry-run should report:
+
+```text
+Old token matches: 0
+Patched token matches: 1
+Status: already patched
+```
+
+It should also show the same ASAR header hash for:
+
+```text
+ASAR header hash
+Info.plist ASAR header hash
+```
+
+If Codex was already open while patching, fully quit and reopen it before testing links. Existing windows can keep renderer JavaScript that was loaded before the patch.
+
 ## Troubleshooting
 
 `Expected exactly one unpatched click-handler token`
@@ -140,6 +211,14 @@ node scripts/patch-codex-file-links.js --app "/path/to/Codex.app" --dry-run
 macOS refuses to launch Codex
 
 Run the patch with `--resign`, then restart Codex. This re-signs with the Electron launch entitlements and clears app-bundle provenance metadata. If Gatekeeper still blocks it, the cleanest restore is to reinstall or update Codex.
+
+`Failed to validate block while ending ASAR file stream`
+
+The app has a patched ASAR payload but stale ASAR integrity metadata. Update to the latest version of this skill and run the patch again with `--resign`.
+
+`Library Validation failed` or `Electron Framework.framework not valid for use in process`
+
+The app was ad-hoc signed without the Electron launch entitlements. Update to the latest version of this skill and run the patch again with `--resign`.
 
 Links open in the wrong editor
 
