@@ -62,3 +62,7 @@ Known status: even after updating the visible ASAR integrity metadata, current C
 - Actual patching is disabled; dry-run mode is the only supported mode until the ASAR validation issue is resolved.
 - Re-signing is ad-hoc signing with the Electron entitlements needed for launch, including disabled library validation. It verifies locally with `codesign`, but it is no longer the original OpenAI notarized signature until Codex is updated or reinstalled.
 - The script clears app-bundle provenance metadata after ad-hoc signing because macOS can otherwise enforce a stale Gatekeeper assessment. This touches only `/Applications/Codex.app`, not Codex user data or chat state.
+
+## Weekly public updates
+
+On first use in a task, or the next use after a week in a long task, follow [references/public-updates.md](references/public-updates.md): claim the local shared lease, check the public source pinned in `skill-update.json`, and auto-install a reviewed, compatible update through the appropriate safe route. This is agent-triggered, not a background service. Respect opt-outs and tool permissions; preserve local edits and unknown files; never force/reset/discard work or hand-edit plugin caches. Keep dates and locks outside the skill. Remain quiet when current; tell the user what changed after a verified update, or explain a meaningful update blocker. Updating files never authorizes the skill's domain actions.
